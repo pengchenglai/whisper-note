@@ -716,6 +716,27 @@ button.dock-side:active {
   opacity: 0.8;
 }
 
+.btn.secondary {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.local-status {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg);
+  font-size: 15px;
+}
+
+.local-status.good {
+  color: var(--good);
+}
+
+.local-status.bad {
+  color: var(--accent);
+}
+
 .about p {
   font-size: 14px;
   color: var(--text-2);

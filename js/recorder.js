@@ -12,29 +12,60 @@ const SOFT_PAUSE_MS = 240;
 const HARD_MAX_S = 25; // 无论如何不超过 25 秒一段
 const ABS_THRESHOLD = { high: 0.004, medium: 0.008, low: 0.016 };
 
-// 流式降采样：对每个输出采样点取对应输入窗口的平均值
+// 流式降采样（例如 48kHz → 16kHz）。
+// 先用低通滤波器滤掉新采样率装不下的高频，再抽取采样点；直接抽取会把高频「折叠」成杂音，
+// 影响 s、sh 这类音的识别。
 class Downsampler {
   constructor(inRate, outRate) {
     this.ratio = inRate / outRate;
-    this.pos = 0;
-    this.acc = 0;
-    this.n = 0;
+    this.passthrough = this.ratio <= 1.0001;
+    if (this.passthrough) return;
+    // 加窗 sinc 低通：截止频率略低于新采样率的一半
+    const taps = 2 * Math.ceil(8 * this.ratio) + 1;
+    const fc = 0.46 / this.ratio; // 以输入采样率为单位
+    const mid = (taps - 1) / 2;
+    const h = new Float32Array(taps);
+    let sum = 0;
+    for (let n = 0; n < taps; n++) {
+      const x = n - mid;
+      const sinc = x === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * x) / (Math.PI * x);
+      const win = 0.54 - 0.46 * Math.cos((2 * Math.PI * n) / (taps - 1)); // Hamming 窗
+      h[n] = sinc * win;
+      sum += h[n];
+    }
+    for (let n = 0; n < taps; n++) h[n] /= sum;
+    this.h = h;
+    this.taps = taps;
+    this.hist = new Float32Array(0); // 上一块没用完的输入
+    this.pos = 0; // 下一个输出点在 work 数组里的位置（可以是小数，如 44.1kHz）
+  }
+
+  _fir(work, i) {
+    const h = this.h;
+    let acc = 0;
+    for (let k = 0; k < this.taps; k++) acc += work[i + k] * h[k];
+    return acc;
   }
 
   process(input) {
-    const out = new Float32Array(Math.ceil(input.length / this.ratio) + 2);
+    if (this.passthrough) return input;
+    const work = new Float32Array(this.hist.length + input.length);
+    work.set(this.hist, 0);
+    work.set(input, this.hist.length);
+    const out = new Float32Array(Math.ceil(work.length / this.ratio) + 2);
     let o = 0;
-    for (let i = 0; i < input.length; i++) {
-      this.acc += input[i];
-      this.n++;
-      this.pos += 1;
-      if (this.pos >= this.ratio) {
-        out[o++] = this.acc / this.n;
-        this.acc = 0;
-        this.n = 0;
-        this.pos -= this.ratio;
-      }
+    let pos = this.pos;
+    // 每个输出点需要 work[i .. i+taps]（多取一个用于小数位置的线性插值）
+    while (Math.floor(pos) + this.taps < work.length) {
+      const i = Math.floor(pos);
+      const frac = pos - i;
+      const y0 = this._fir(work, i);
+      out[o++] = frac > 1e-6 ? y0 + frac * (this._fir(work, i + 1) - y0) : y0;
+      pos += this.ratio;
     }
+    const keepFrom = Math.min(Math.floor(pos), work.length);
+    this.hist = work.slice(keepFrom);
+    this.pos = pos - keepFrom;
     return out.subarray(0, o);
   }
 }
@@ -79,6 +110,7 @@ export class Recorder {
         endSilenceMs: 800,
         sensitivity: 'medium',
         onSpeechStart() {},
+        onSpeechFrame() {}, // 说话期间的每一帧音频（含开头预留的 300ms），供本机流式识别使用
         onSegment() {},
         onSpeechDiscard() {},
         onLevel() {},
@@ -237,11 +269,13 @@ export class Recorder {
         this.silence = 0;
         this.run = 0;
         this.o.onSpeechStart(this.segStart);
+        for (let i = 0; i < this.seg.length; i++) this.o.onSpeechFrame(this.seg[i]);
       }
       return;
     }
 
     this.seg.push(frame);
+    this.o.onSpeechFrame(frame);
     // 说话过程中用更低的门槛，避免句尾轻声被截断
     if (rms > base * 0.6) {
       this.voiced++;

@@ -1,0 +1,3 @@
+local-asr/models/**/data.part* binary
+*.wasm binary
+*.png binary

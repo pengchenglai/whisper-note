@@ -3,6 +3,14 @@
 const KEY = 'wn.settings.v1';
 
 export const PRESETS = {
+  local: {
+    // 模型在设备上运行，见 local-engine.js 和 local-asr/
+    label: '本机识别（离线、免费，无需 Key）',
+    kind: 'local',
+    baseUrl: 'local',
+    models: ['small', 'accurate'], // 对应 local-engine.js 里的 LOCAL_MODELS
+    keyUrl: '',
+  },
   openai: {
     label: 'OpenAI（中英混说最准，按量付费）',
     baseUrl: 'https://api.openai.com/v1',
@@ -38,11 +46,12 @@ export const PRESETS = {
 };
 
 const DEFAULTS = {
-  provider: 'openai',
+  provider: 'local',
   keys: {},
   models: {},
   customBaseUrl: '',
   doubaoAppId: '',
+  localModel: 'small',
   language: 'mixed', // mixed | zh | en | auto
   vocab: '',
   interim: true,
@@ -80,13 +89,19 @@ export function activeConfig(s) {
     kind: preset.kind || 'openai',
     baseUrl: baseUrl.trim(),
     apiKey: (s.keys[s.provider] || '').trim(),
-    model: (s.models[s.provider] || preset.models[0] || '').trim(),
+    model:
+      preset.kind === 'local'
+        ? preset.models.includes(s.localModel)
+          ? s.localModel
+          : preset.models[0]
+        : (s.models[s.provider] || preset.models[0] || '').trim(),
     appId: preset.kind === 'doubao' ? (s.doubaoAppId || '').trim() : '',
   };
 }
 
 export function isConfigured(s) {
   const c = activeConfig(s);
+  if (c.kind === 'local') return true; // 不需要任何 Key；模型是否已下载由 local-engine 负责
   if (c.kind === 'doubao' && !c.appId) return false;
   return !!(c.baseUrl && c.apiKey && c.model);
 }

@@ -1,0 +1,47 @@
+{
+ "model": "zipformer-small-bilingual-zh-en-2023-02-16",
+ "cache": "wn-local-model-zipformer-small-bilingual-zh-en-2023-02-16",
+ "style": "raw",
+ "size": 60142871,
+ "sha256": "097e30549e2a39913e6383f0a252f00e9368340ddf3a866d874e6e04264e7361",
+ "files": [
+  {
+   "name": "encoder.onnx",
+   "start": 0,
+   "end": 42980793,
+   "source": "encoder-epoch-99-avg-1.int8.onnx"
+  },
+  {
+   "name": "decoder.onnx",
+   "start": 42980793,
+   "end": 56858069,
+   "source": "decoder-epoch-99-avg-1.onnx"
+  },
+  {
+   "name": "joiner.onnx",
+   "start": 56858069,
+   "end": 60086554,
+   "source": "joiner-epoch-99-avg-1.int8.onnx"
+  },
+  {
+   "name": "tokens.txt",
+   "start": 60086554,
+   "end": 60142871,
+   "source": "tokens.txt"
+  }
+ ],
+ "parts": [
+  {
+   "name": "data.part00",
+   "size": 25165824
+  },
+  {
+   "name": "data.part01",
+   "size": 25165824
+  },
+  {
+   "name": "data.part02",
+   "size": 9811223
+  }
+ ]
+}

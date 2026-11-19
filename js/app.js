@@ -5,6 +5,7 @@ import { loadSettings, saveSettings, activeConfig, isConfigured, PRESETS } from 
 import { transcribe } from './transcriber.js';
 import { Session, separator, uid, isIOS } from './session.js';
 import { encodeWav } from './recorder.js';
+import { localEngine, LOCAL_MODELS } from './local-engine.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const app = $('#app');
@@ -159,6 +160,53 @@ const ICON = {
   file: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8 8l4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>',
 };
 
+// ---------- 本机识别模型 ----------
+
+const isLocal = (settings) => activeConfig(settings).kind === 'local';
+const localModelOf = (settings) => activeConfig(settings).model;
+
+function localLoadingText() {
+  const p = localEngine.progress;
+  if (!p) return '正在准备识别模型…';
+  if (p.phase === 'starting') return '正在启动识别引擎…';
+  const pct = p.total ? Math.floor((p.loaded / p.total) * 100) : 0;
+  if (p.phase === 'downloading') {
+    return `正在下载识别模型 ${pct}%（${Math.round(p.loaded / 1e6)} / ${Math.round(p.total / 1e6)} MB），请保持本页面打开`;
+  }
+  return `正在读取识别模型 ${pct}%`;
+}
+
+// 确保本机识别可用：没下载过就先征得同意再下载，然后启动引擎。返回是否就绪
+async function ensureLocalReady() {
+  const id = localModelOf(loadSettings());
+  if (localEngine.isReady(id)) return true;
+  if (!localEngine.supported) {
+    toast('这个浏览器不支持本机识别，可以在设置里改用云端服务', 5000);
+    return false;
+  }
+  const alreadyLoading = localEngine.state === 'loading' && localEngine.modelId === id;
+  if (!alreadyLoading && !(await localEngine.isDownloaded(id))) {
+    const mb = localEngine.sizeMB(id);
+    const ok = confirm(
+      `首次使用需要下载约 ${mb}MB 的识别模型，建议连接 Wi-Fi。\n\n下载一次后就能完全离线使用，不需要任何 Key，也不产生费用。\n\n现在下载吗？`
+    );
+    if (!ok) return false;
+  }
+  const unsub = localEngine.subscribe(() => busy(localLoadingText()));
+  busy(localLoadingText());
+  try {
+    await localEngine.load(id);
+    if (localEngine.cached === false) toast('模型已加载，但没能保存到本机（存储空间不足？），下次还需要重新下载', 6000);
+    return true;
+  } catch (e) {
+    toast('本机识别没能启动：' + ((e && e.message) || e), 6000);
+    return false;
+  } finally {
+    unsub();
+    busy(null);
+  }
+}
+
 // ---------- 路由 ----------
 
 function route() {
@@ -193,6 +241,12 @@ async function renderList(seq) {
   } catch (e) {
     toast('读取笔记失败：浏览器可能禁用了本地存储');
   }
+  const needModel =
+    isLocal(settings) &&
+    localEngine.supported &&
+    !localEngine.isReady(localModelOf(settings)) &&
+    localEngine.state !== 'loading' &&
+    !(await localEngine.isDownloaded(localModelOf(settings)));
   if (seq !== renderSeq) return;
 
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -209,6 +263,11 @@ async function renderList(seq) {
         isConfigured(settings)
           ? ''
           : `<button class="banner" id="banner-setup"><b>还差一步：设置转写服务</b><span>填入 API Key 后，录音才能实时转成文字。点这里去设置 ›</span></button>`
+      }
+      ${
+        needModel
+          ? `<button class="banner" id="banner-model"><b>还差一步：下载离线识别模型</b><span>下载一次（约 ${localEngine.sizeMB(localModelOf(settings))}MB，建议 Wi-Fi），之后不联网、不需要 Key 就能把语音实时转成文字。点这里下载 ›</span></button>`
+          : ''
       }
       ${
         showInstall
@@ -256,6 +315,14 @@ async function renderList(seq) {
   $('#btn-settings').addEventListener('click', () => go('#/settings'));
   const setup = $('#banner-setup');
   if (setup) setup.addEventListener('click', () => go('#/settings'));
+  const modelBanner = $('#banner-model');
+  if (modelBanner)
+    modelBanner.addEventListener('click', async () => {
+      if (await ensureLocalReady()) {
+        toast('识别模型已就绪，可以开始录音了');
+        route();
+      }
+    });
   const closeTip = $('#install-close');
   if (closeTip)
     closeTip.addEventListener('click', () => {
@@ -348,6 +415,7 @@ async function importFile(file) {
 
 const BARS = 36;
 let recUI = null;
+let startingLocal = false;
 
 function micErrorMessage(e) {
   const name = e && e.name;
@@ -365,6 +433,20 @@ async function startRecording() {
     return;
   }
   const settings = loadSettings();
+  if (isLocal(settings) && !localEngine.isReady(localModelOf(settings))) {
+    if (startingLocal) return;
+    startingLocal = true;
+    const t0 = Date.now();
+    const ok = await ensureLocalReady().finally(() => (startingLocal = false));
+    if (!ok) return;
+    if (Date.now() - t0 > 2500) {
+      // 等了太久，浏览器已经不认这次点击了，需要用户再点一下才能打开麦克风
+      toast('识别模型已就绪，请再点一次开始录音', 4000);
+      route();
+      return;
+    }
+  }
+  if (session) return;
   session = new Session(settings, {
     onUpdate: () => recUI && recUI.drawText(),
     onLevel: (rms) => recUI && recUI.level(rms),
@@ -468,7 +550,11 @@ function openRecorder() {
       }
       if (!html) {
         html = `<p class="placeholder">${
-          session.canTranscribe ? '开始说话，文字会实时出现在这里…<br>中文、English 或者混着说都可以。' : '正在录音。<br>还没有设置转写服务，所以这次只保存录音，不会出文字。'
+          session.canTranscribe
+            ? '开始说话，文字会实时出现在这里…<br>中文、English 或者混着说都可以。'
+            : session.local
+              ? '正在录音。<br>本机识别模型还没有准备好，所以这次只保存录音，不会出文字。'
+              : '正在录音。<br>还没有设置转写服务，所以这次只保存录音，不会出文字。'
         }</p>`;
       }
       textEl.innerHTML = html;
@@ -706,11 +792,21 @@ async function renderNote(id, seq) {
 // ---------- 设置 ----------
 
 function renderSettings() {
+  if (cleanup) {
+    // 切换服务商时会原地重画，这里先收掉上一次的订阅
+    try {
+      cleanup();
+    } catch (e) {
+      /* 忽略 */
+    }
+    cleanup = null;
+  }
   const s = loadSettings();
   const preset = PRESETS[s.provider];
   const cfg = activeConfig(s);
   const isCustom = s.provider === 'custom';
   const isDoubao = preset.kind === 'doubao';
+  const isLocalP = preset.kind === 'local';
   const modelOptions = preset.models.slice();
   if (cfg.model && !modelOptions.includes(cfg.model)) modelOptions.push(cfg.model);
   const opt = (value, label, current) => `<option value="${esc(value)}"${value === current ? ' selected' : ''}>${esc(label)}</option>`;
@@ -738,7 +834,17 @@ function renderSettings() {
             ? `<label class="field"><span>APP ID</span><input id="s-appid" type="text" inputmode="numeric" placeholder="火山引擎控制台里的 APP ID" value="${esc(s.doubaoAppId)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>`
             : ''
         }
-        <label class="field"><span>${isDoubao ? 'Access Token' : 'API Key'}</span>
+        ${
+          isLocalP
+            ? `<label class="field"><span>识别模型</span>
+          <select id="local-model">${Object.keys(LOCAL_MODELS).map((k) => opt(k, LOCAL_MODELS[k].label, cfg.model)).join('')}</select>
+        </label>
+        <p class="local-status" id="local-status">正在检查模型…</p>
+        <button class="btn" id="local-load" hidden>下载识别模型</button>
+        <button class="btn secondary" id="local-remove" hidden>删除已下载的模型</button>
+        <p class="help">语音直接在这台设备上识别：不联网、不需要 Key、不产生任何费用。模型只需下载一次，手机上同一时间只保留一个模型。</p>
+        <p class="help"><b>轻巧</b>：体积小、出字快，适合手机；没有原生标点（应用按停顿自动补句号），中英混说偶尔会漏词。<br><b>精准</b>：自带标点，中英混说更准；体积大、更吃性能，适合电脑和较新的手机。</p>`
+            : `<label class="field"><span>${isDoubao ? 'Access Token' : 'API Key'}</span>
           <input id="s-key" type="password" placeholder="${isDoubao ? '粘贴 Access Token' : '粘贴你的 Key'}" value="${esc(s.keys[s.provider] || '')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         </label>
         ${
@@ -761,10 +867,11 @@ function renderSettings() {
               }</p>`
         }
         <button class="btn" id="s-test">测试连接</button>
-        <p class="help" id="s-test-result"></p>
+        <p class="help" id="s-test-result"></p>`
+        }
       </section>
 
-      <section class="group">
+      <section class="group"${isLocalP ? ' hidden' : ''}>
         <h2>识别</h2>
         <label class="field"><span>语言</span>
           <select id="s-lang">
@@ -782,7 +889,7 @@ function renderSettings() {
 
       <section class="group">
         <h2>录音</h2>
-        <label class="field switch"><span>边说边预览<small>说话过程中先显示灰色的临时文字</small></span>
+        <label class="field switch"${isLocalP ? ' hidden' : ''}><span>边说边预览<small>说话过程中先显示灰色的临时文字</small></span>
           <input id="s-interim" type="checkbox"${s.interim ? ' checked' : ''}>
         </label>
         <label class="field"><span>断句速度</span>
@@ -823,8 +930,23 @@ function renderSettings() {
 
   $('#back').addEventListener('click', () => go('#/'));
   $('#s-provider').addEventListener('change', (e) => update((c) => (c.provider = e.target.value), true));
-  $('#s-key').addEventListener('input', (e) => update((c) => (c.keys[c.provider] = e.target.value.trim())));
-  if (isDoubao) {
+  if (isLocalP) {
+    $('#local-model').addEventListener('change', (e) => {
+      if (session) {
+        toast('正在录音，结束后再切换模型');
+        e.target.value = cfg.model;
+        return;
+      }
+      update((c) => (c.localModel = e.target.value), true);
+    });
+    bindLocalSettings(cfg.model);
+  } else {
+    $('#s-key').addEventListener('input', (e) => update((c) => (c.keys[c.provider] = e.target.value.trim())));
+    bindTestButton();
+  }
+  if (isLocalP) {
+    /* 本机识别没有 Key、模型可选 */
+  } else if (isDoubao) {
     $('#s-appid').addEventListener('input', (e) => update((c) => (c.doubaoAppId = e.target.value.trim())));
   } else if (isCustom) {
     $('#s-base').addEventListener('input', (e) => update((c) => (c.customBaseUrl = e.target.value.trim())));
@@ -846,7 +968,69 @@ function renderSettings() {
   $('#s-interim').addEventListener('change', (e) => update((c) => (c.interim = e.target.checked)));
   $('#s-pause').addEventListener('change', (e) => update((c) => (c.pauseMs = Number(e.target.value))));
   $('#s-sens').addEventListener('change', (e) => update((c) => (c.sensitivity = e.target.value)));
+}
 
+// 设置页里「本机识别」那一块：显示模型状态，提供下载 / 删除
+function bindLocalSettings(id) {
+  const statusEl = $('#local-status');
+  const loadBtn = $('#local-load');
+  const removeBtn = $('#local-remove');
+  let alive = true;
+
+  const draw = async () => {
+    // 引擎里装的可能是另一个模型，这时对当前选中的模型来说相当于「未加载」
+    const st = localEngine.modelId === id ? localEngine.state : 'idle';
+    let downloaded = false;
+    if (st === 'idle' || st === 'error') downloaded = await localEngine.isDownloaded(id);
+    if (!alive || !statusEl.isConnected) return;
+    statusEl.className = 'local-status';
+    loadBtn.hidden = true;
+    removeBtn.hidden = true;
+    if (!localEngine.supported) {
+      statusEl.classList.add('bad');
+      statusEl.textContent = '这个浏览器不支持本机识别，请改选云端服务商。';
+    } else if (st === 'ready') {
+      statusEl.classList.add('good');
+      statusEl.textContent = '识别模型已就绪，可以离线使用。';
+      removeBtn.hidden = false;
+    } else if (st === 'loading') {
+      statusEl.textContent = localLoadingText();
+    } else if (st === 'error') {
+      statusEl.classList.add('bad');
+      statusEl.textContent = '没能启动：' + (localEngine.error || '未知错误');
+      loadBtn.hidden = false;
+      loadBtn.textContent = '重试';
+      removeBtn.hidden = !downloaded;
+    } else if (downloaded) {
+      statusEl.classList.add('good');
+      statusEl.textContent = '识别模型已下载，开始录音时会自动启动。';
+      removeBtn.hidden = false;
+    } else {
+      statusEl.textContent = `还没有下载这个模型（约 ${localEngine.sizeMB(id)}MB，建议连接 Wi-Fi）。`;
+      loadBtn.hidden = false;
+      loadBtn.textContent = '下载识别模型';
+    }
+  };
+
+  const unsub = localEngine.subscribe(draw);
+  cleanup = () => {
+    alive = false;
+    unsub();
+  };
+  draw();
+
+  loadBtn.addEventListener('click', () => {
+    localEngine.load(id).catch(() => {}); // 进度和错误都通过上面的状态显示
+  });
+  removeBtn.addEventListener('click', async () => {
+    if (session) return toast('正在录音，结束后再删除');
+    if (!confirm('删除已下载的识别模型？之后要用本机识别需要重新下载。')) return;
+    await localEngine.remove(id);
+    toast('已删除');
+  });
+}
+
+function bindTestButton() {
   $('#s-test').addEventListener('click', async () => {
     const cur = loadSettings();
     const out = $('#s-test-result');
@@ -877,6 +1061,18 @@ function renderSettings() {
 
 window.addEventListener('hashchange', route);
 route();
+
+// 模型已经下载过的话，一打开应用就在后台把引擎启动好，这样点录音时不用等
+(async () => {
+  try {
+    const s = loadSettings();
+    if (isLocal(s) && localEngine.supported && (await localEngine.isDownloaded(localModelOf(s)))) {
+      await localEngine.load(localModelOf(s));
+    }
+  } catch (e) {
+    /* 启动失败会在用户点录音时再提示 */
+  }
+})();
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 

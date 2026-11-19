@@ -1,0 +1,63 @@
+{
+ "model": "x-asr-480ms-zh-en-punct-int8-2026-06-05",
+ "cache": "wn-local-model-x-asr-480ms-zh-en-punct-int8-2026-06-05",
+ "style": "punct",
+ "size": 169227953,
+ "sha256": "5762817b1cb89d03217bc00eea96bd88eda04e5453c6c031a647b89556aab607",
+ "files": [
+  {
+   "name": "encoder.onnx",
+   "start": 0,
+   "end": 155278641,
+   "source": "encoder.int8.onnx"
+  },
+  {
+   "name": "decoder.onnx",
+   "start": 155278641,
+   "end": 166587725,
+   "source": "decoder.onnx"
+  },
+  {
+   "name": "joiner.onnx",
+   "start": 166587725,
+   "end": 169169147,
+   "source": "joiner.int8.onnx"
+  },
+  {
+   "name": "tokens.txt",
+   "start": 169169147,
+   "end": 169227953,
+   "source": "tokens.txt"
+  }
+ ],
+ "parts": [
+  {
+   "name": "data.part00",
+   "size": 25165824
+  },
+  {
+   "name": "data.part01",
+   "size": 25165824
+  },
+  {
+   "name": "data.part02",
+   "size": 25165824
+  },
+  {
+   "name": "data.part03",
+   "size": 25165824
+  },
+  {
+   "name": "data.part04",
+   "size": 25165824
+  },
+  {
+   "name": "data.part05",
+   "size": 25165824
+  },
+  {
+   "name": "data.part06",
+   "size": 18233009
+  }
+ ]
+}

@@ -3,6 +3,7 @@
 import { Recorder, encodeWav, RATE } from './recorder.js';
 import { transcribe, transcribeWithRetry } from './transcriber.js';
 import { activeConfig, isConfigured } from './settings.js';
+import { localEngine } from './local-engine.js';
 import * as db from './db.js';
 
 const MAX_PARALLEL = 2;
@@ -33,7 +34,9 @@ export class Session {
   constructor(settings, handlers) {
     this.s = settings;
     this.cfg = activeConfig(settings);
-    this.canTranscribe = isConfigured(settings);
+    // 本机识别：说话时把音频一帧帧喂给设备上的模型，逐字出结果；云端：说完一句再整句发出去
+    this.local = this.cfg.kind === 'local';
+    this.canTranscribe = this.local ? localEngine.isReady(this.cfg.model) : isConfigured(settings);
     this.h = Object.assign({ onUpdate() {}, onLevel() {}, onState() {}, onNotice() {}, onForceStop() {} }, handlers);
     this.entries = []; // 每一句：{id, t0, t1, status, text, preview, samples}
     this.current = null;
@@ -90,6 +93,9 @@ export class Session {
       sensitivity: this.s.sensitivity,
       onLevel: (rms) => this.h.onLevel(rms),
       onSpeechStart: (t0) => this._onSpeechStart(t0),
+      onSpeechFrame: (frame) => {
+        if (this.local && this.current && this.canTranscribe) localEngine.push(this.current.id, frame);
+      },
       onSpeechDiscard: () => this._onSpeechDiscard(),
       onSegment: (seg) => this._onSegment(seg),
       onInterrupted: (why) => this._onInterrupted(why),
@@ -111,14 +117,51 @@ export class Session {
   _onSpeechStart(t0) {
     this.current = { id: uid(), t0, t1: t0, status: 'speaking', text: '', preview: '', samples: null, interimLen: 0 };
     this.entries.push(this.current);
+    if (this.local && this.canTranscribe) {
+      const entry = this.current;
+      localEngine.begin(entry.id, (text) => {
+        if (entry.status === 'speaking' || entry.status === 'pending') {
+          entry.preview = text;
+          this.h.onUpdate();
+        }
+      });
+    }
     this.h.onUpdate();
   }
 
   _onSpeechDiscard() {
     const cur = this.current;
     this.current = null;
-    if (cur) this.entries = this.entries.filter((e) => e !== cur);
+    if (cur) {
+      this.entries = this.entries.filter((e) => e !== cur);
+      if (this.local) localEngine.cancel(cur.id);
+    }
     this.h.onUpdate();
+  }
+
+  // 本机识别：这一句说完了，让模型给出最终结果
+  _finishLocal(entry, seg) {
+    entry.status = 'pending';
+    entry.samples = seg.samples; // 留着，万一引擎出错还能重试
+    this.active++;
+    this.h.onUpdate();
+    localEngine
+      .end(entry.id)
+      .then((text) => {
+        entry.text = text;
+        entry.status = 'done';
+        entry.samples = null;
+        this._persistSoon();
+      })
+      .catch((e) => {
+        entry.status = 'error';
+        this.lastError = (e && e.message) || '本机识别失败';
+      })
+      .finally(() => {
+        this.active--;
+        this.h.onUpdate();
+        this._pump();
+      });
   }
 
   _onSegment(seg) {
@@ -129,6 +172,10 @@ export class Session {
     if (!this.canTranscribe) {
       entry.status = 'skipped';
       this.h.onUpdate();
+      return;
+    }
+    if (this.local) {
+      this._finishLocal(entry, seg);
       return;
     }
     entry.samples = seg.samples;
@@ -188,8 +235,12 @@ export class Session {
     const ac = new AbortController();
     this.aborts.add(ac);
     try {
-      const wav = encodeWav(entry.samples, RATE);
-      entry.text = await transcribeWithRetry(wav, this.cfg, this._opts({ signal: ac.signal }));
+      if (this.local) {
+        entry.text = await localEngine.transcribeSamples(entry.samples); // 只在「重试」时走到这里
+      } else {
+        const wav = encodeWav(entry.samples, RATE);
+        entry.text = await transcribeWithRetry(wav, this.cfg, this._opts({ signal: ac.signal }));
+      }
       entry.status = 'done';
       entry.samples = null;
       this._persistSoon();
@@ -227,7 +278,7 @@ export class Session {
 
   // 说话过程中每隔一小会儿把「这一句到目前为止」送去识别，显示成灰色预览
   _tickInterim() {
-    if (!this.s.interim || !this.canTranscribe || this.state !== 'recording') return;
+    if (this.local || !this.s.interim || !this.canTranscribe || this.state !== 'recording') return;
     const cur = this.current;
     if (!cur || this.interimBusy || this.active >= MAX_PARALLEL) return;
     if (Date.now() < this.interimBlockedUntil) return;
@@ -331,6 +382,7 @@ export class Session {
     this.discarded = true;
     this._teardown();
     this.queue = [];
+    if (this.local && this.current) localEngine.cancel(this.current.id);
     this.aborts.forEach((ac) => ac.abort());
     this._setState('stopped');
     try {

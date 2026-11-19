@@ -1,4 +1,6 @@
-// 调用语音转文字接口（OpenAI 的 /audio/transcriptions 及兼容接口）
+// 把一段音频变成文字：本机识别，或调用云端接口（OpenAI 的 /audio/transcriptions 及兼容接口、豆包）
+
+import { localEngine } from './local-engine.js';
 
 export class TranscribeError extends Error {
   constructor(message, status) {
@@ -139,11 +141,8 @@ function wavFromSamples(samples, rate) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
-// 把 m4a / webm 等格式在本机解码成 16kHz 单声道 WAV
-async function toWav16k(blob) {
-  if (blob.size > DOUBAO_CONVERT_MAX) {
-    throw new TranscribeError('豆包只接受 WAV / MP3 / OGG；这段录音太长，无法在手机上转换格式，请换用其他服务商转写', 0);
-  }
+// 把任意格式的音频在本机解码成 16kHz 单声道采样
+async function decodeTo16k(blob) {
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   if (!OAC) throw new TranscribeError('这个浏览器无法转换音频格式', 0);
   let decoded;
@@ -163,7 +162,46 @@ async function toWav16k(blob) {
     const ch = decoded.getChannelData(c);
     for (let i = 0; i < n; i++) mono[i] += ch[i] / decoded.numberOfChannels;
   }
-  return wavFromSamples(mono, decoded.sampleRate);
+  return { samples: mono, rate: decoded.sampleRate };
+}
+
+async function toWav16k(blob) {
+  if (blob.size > DOUBAO_CONVERT_MAX) {
+    throw new TranscribeError('豆包只接受 WAV / MP3 / OGG；这段录音太长，无法在手机上转换格式，请换用其他服务商转写', 0);
+  }
+  const { samples, rate } = await decodeTo16k(blob);
+  return wavFromSamples(samples, rate);
+}
+
+// ---------- 本机识别：整段音频 ----------
+
+const LOCAL_FILE_MAX = 16 * 1024 * 1024;
+
+async function transcribeLocal(blob, cfg, opts) {
+  if (blob.size > LOCAL_FILE_MAX) {
+    throw new TranscribeError('这段音频太长（超过 16MB），本机识别处理不了，请剪短后再试', 0);
+  }
+  if (!localEngine.isReady(cfg.model) && !(await localEngine.isDownloaded(cfg.model))) {
+    throw new TranscribeError('还没有下载本机识别模型，请先到「设置」里下载', 0);
+  }
+  let { samples, rate } = await decodeTo16k(blob);
+  if (rate !== 16000) {
+    // 个别浏览器解码时不按要求重采样，这里手动换算到 16kHz
+    const ratio = rate / 16000;
+    const out = new Float32Array(Math.floor(samples.length / ratio));
+    for (let i = 0; i < out.length; i++) {
+      const pos = i * ratio;
+      const a = Math.floor(pos);
+      const b = Math.min(samples.length - 1, a + 1);
+      out[i] = samples[a] + (samples[b] - samples[a]) * (pos - a);
+    }
+    samples = out;
+  }
+  try {
+    return await localEngine.transcribeSamples(samples, opts.onProgress, cfg.model);
+  } catch (e) {
+    throw new TranscribeError((e && e.message) || '本机识别失败', 0);
+  }
 }
 
 function doubaoFormat(blob, filename) {
@@ -239,6 +277,7 @@ async function transcribeDoubao(blob, cfg, opts) {
  * @returns {Promise<string>} 识别出的文字（可能为空字符串）
  */
 export async function transcribe(blob, cfg, opts = {}) {
+  if (cfg.kind === 'local') return transcribeLocal(blob, cfg, opts);
   if (!cfg.apiKey) throw new TranscribeError('还没有设置 API Key', 0);
   if (!cfg.baseUrl || !cfg.model) throw new TranscribeError('转写服务设置不完整', 0);
   if (cfg.kind === 'doubao') return transcribeDoubao(blob, cfg, opts);
