@@ -25,9 +25,16 @@
 | OpenAI（默认，模型 `gpt-transcribe`） | 中英混说效果最好；按用量付费，需要绑定付款方式 | https://platform.openai.com/api-keys |
 | Groq（模型 `whisper-large-v3`） | 有免费额度，速度很快 | https://console.groq.com/keys |
 | 硅基流动（模型 `SenseVoiceSmall`） | 国内网络可以直连 | https://cloud.siliconflow.cn/account/ak |
+| 豆包 / 火山引擎（大模型录音文件识别极速版） | 国内网络可以直连；填的是 APP ID + Access Token，不是单个 Key | https://www.volcengine.com/docs/6561/1631584 |
 | 自定义 | 任何兼容 OpenAI `/audio/transcriptions` 的接口 | — |
 
 填好之后点「测试连接」，显示成功就可以用了。
+
+几点说明：
+
+- **这里用的是各家面向开发者的 API，不是聊天 App 的会员。** ChatGPT Plus、豆包 App 的账号都不能直接用在这里，需要到对应的开发者后台单独开通。
+- **豆包**要用火山引擎「豆包语音」旧版控制台的 APP ID 和 Access Token，并开通「大模型录音文件识别极速版」。新版控制台的单个 API Key 浏览器发不出去，所以用不了。豆包只接受 WAV / MP3 / OGG；实时转写不受影响，「重新转写」和导入其他格式时，应用会先在本机转成 WAV（限 8MB 以内的文件）。
+- **Claude 不能用作转写服务**：Anthropic 的 API 不接受音频输入。
 
 ## 装到手机上
 

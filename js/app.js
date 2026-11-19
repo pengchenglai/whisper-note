@@ -710,6 +710,7 @@ function renderSettings() {
   const preset = PRESETS[s.provider];
   const cfg = activeConfig(s);
   const isCustom = s.provider === 'custom';
+  const isDoubao = preset.kind === 'doubao';
   const modelOptions = preset.models.slice();
   if (cfg.model && !modelOptions.includes(cfg.model)) modelOptions.push(cfg.model);
   const opt = (value, label, current) => `<option value="${esc(value)}"${value === current ? ' selected' : ''}>${esc(label)}</option>`;
@@ -732,19 +733,33 @@ function renderSettings() {
             ? `<label class="field"><span>接口地址</span><input id="s-base" type="url" inputmode="url" placeholder="https://example.com/v1" value="${esc(s.customBaseUrl)}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>`
             : ''
         }
-        <label class="field"><span>API Key</span>
-          <input id="s-key" type="password" placeholder="粘贴你的 Key" value="${esc(s.keys[s.provider] || '')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        ${
+          isDoubao
+            ? `<label class="field"><span>APP ID</span><input id="s-appid" type="text" inputmode="numeric" placeholder="火山引擎控制台里的 APP ID" value="${esc(s.doubaoAppId)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>`
+            : ''
+        }
+        <label class="field"><span>${isDoubao ? 'Access Token' : 'API Key'}</span>
+          <input id="s-key" type="password" placeholder="${isDoubao ? '粘贴 Access Token' : '粘贴你的 Key'}" value="${esc(s.keys[s.provider] || '')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         </label>
-        <label class="field"><span>模型</span>
+        ${
+          isDoubao
+            ? ''
+            : `<label class="field"><span>模型</span>
           ${
             isCustom
               ? `<input id="s-model-text" type="text" placeholder="例如 whisper-large-v3" value="${esc(cfg.model)}" autocapitalize="off" autocorrect="off" spellcheck="false">`
               : `<select id="s-model">${modelOptions.map((m) => opt(m, m, cfg.model)).join('')}<option value="__other__">其他模型…</option></select>`
           }
-        </label>
-        <p class="help">Key 只保存在这台设备上，录音时只会直接发给你选的服务商。${
-          preset.keyUrl ? `<a href="${preset.keyUrl}" target="_blank" rel="noopener">去申请 Key ›</a>` : ''
-        }</p>
+        </label>`
+        }
+        ${
+          isDoubao
+            ? `<p class="help">在火山引擎「豆包语音」里创建应用，开通「大模型录音文件识别极速版」，然后填入<b>旧版控制台</b>的 APP ID 和 Access Token。新版控制台的单个 API Key 在网页应用里用不了。<a href="${preset.keyUrl}" target="_blank" rel="noopener">查看官方说明 ›</a></p>
+        <p class="help">豆包自动识别语言，下面的「语言」和「专有名词」设置对它不生效。</p>`
+            : `<p class="help">Key 只保存在这台设备上，录音时只会直接发给你选的服务商。${
+                preset.keyUrl ? `<a href="${preset.keyUrl}" target="_blank" rel="noopener">去申请 Key ›</a>` : ''
+              }</p>`
+        }
         <button class="btn" id="s-test">测试连接</button>
         <p class="help" id="s-test-result"></p>
       </section>
@@ -809,7 +824,9 @@ function renderSettings() {
   $('#back').addEventListener('click', () => go('#/'));
   $('#s-provider').addEventListener('change', (e) => update((c) => (c.provider = e.target.value), true));
   $('#s-key').addEventListener('input', (e) => update((c) => (c.keys[c.provider] = e.target.value.trim())));
-  if (isCustom) {
+  if (isDoubao) {
+    $('#s-appid').addEventListener('input', (e) => update((c) => (c.doubaoAppId = e.target.value.trim())));
+  } else if (isCustom) {
     $('#s-base').addEventListener('input', (e) => update((c) => (c.customBaseUrl = e.target.value.trim())));
     $('#s-model-text').addEventListener('input', (e) => update((c) => (c.models.custom = e.target.value.trim())));
   } else {

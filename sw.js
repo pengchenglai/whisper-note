@@ -1,6 +1,6 @@
 // 离线缓存：断网时也能打开应用、查看已有笔记（转写本身仍需要联网）
 // 修改了任何文件后，把下面的版本号加一，手机上才会更新。
-const VERSION = 'whisper-note-v1';
+const VERSION = 'whisper-note-v2';
 
 const ASSETS = [
   './',
